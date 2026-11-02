@@ -1,253 +1,185 @@
 import 'package:flutter/material.dart';
-import 'dart:math';
+import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-// GLOBAL SETTINGS
-final appSettings = AppSettings();
+import 'local_queue_service.dart';
+import 'queue_provider.dart';
 
-class AppSettings extends ChangeNotifier {
-  double spacing = 0.0;
-  double borderRadius = 0.0;
-  bool randomColors = true;
-  MaterialColor baseColor = Colors.blue;
-
-  void setSpacing(double value) {
-    spacing = value;
-    notifyListeners();
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final url = const String.fromEnvironment('SUPABASE_URL');
+  final publicKey = const String.fromEnvironment('SUPABASE_ANON_KEY');
+  SupabaseClient? supabase;
+  if (url.isNotEmpty && publicKey.isNotEmpty) {
+    try {
+      await Supabase.initialize(url: url, publishableKey: publicKey);
+      supabase = Supabase.instance.client;
+      try {
+        await supabase.auth.signInAnonymously();
+      } catch (_) {
+        // Public queue policies also allow the anon database role if anonymous
+        // authentication is disabled for the Supabase project.
+      }
+    } catch (_) {
+      // The local queue remains usable if the cloud configuration is invalid.
+    }
   }
-
-  void setBorderRadius(double value) {
-    borderRadius = value;
-    notifyListeners();
-  }
-
-  void setRandomColors(bool value) {
-    randomColors = value;
-    notifyListeners();
-  }
-
-  void setBaseColor(MaterialColor color) {
-    baseColor = color;
-    notifyListeners();
-  }
+  runApp(WaitingRoomApp(supabase: supabase));
 }
 
-void main() {
-  runApp(const MyApp());
-}
+class WaitingRoomApp extends StatelessWidget {
+  const WaitingRoomApp({super.key, this.supabase});
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final SupabaseClient? supabase;
 
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Splittable Rectangles',
-      debugShowCheckedModeBanner: false,
-      home: Scaffold(
-        // Transparent AppBar just to hold the Drawer hamburger menu icon
-        appBar: AppBar(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          iconTheme: const IconThemeData(
-            color: Colors.black,
-            size: 32,
-            shadows: [Shadow(color: Colors.white, blurRadius: 10)], // Make it visible on dark colors
-          ),
-        ),
-        extendBodyBehindAppBar: true, // Let the rectangles fill the entire screen
-        drawer: const SettingsDrawer(),
-        body: const SplittableRectangle(
-          splitDirection: Axis.horizontal,
-        ),
+  Widget build(BuildContext context) => ChangeNotifierProvider(
+    create: (_) =>
+        QueueProvider(localQueue: LocalQueueService(), supabase: supabase)
+          ..initialize(),
+    child: MaterialApp(
+      title: 'Waiting Room',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF216E66)),
+        useMaterial3: true,
       ),
-    );
-  }
+      home: const WaitingRoomScreen(),
+    ),
+  );
 }
 
-class SettingsDrawer extends StatelessWidget {
-  const SettingsDrawer({super.key});
+class WaitingRoomScreen extends StatefulWidget {
+  const WaitingRoomScreen({super.key});
+
+  @override
+  State<WaitingRoomScreen> createState() => _WaitingRoomScreenState();
+}
+
+class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
+  final _nameController = TextEditingController();
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _addClient(QueueProvider queue) async {
+    await queue.addClient(_nameController.text);
+    _nameController.clear();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Drawer(
-      // ListenableBuilder redraws the drawer when settings change
-      child: ListenableBuilder(
-        listenable: appSettings,
-        builder: (context, _) {
-          return ListView(
-            padding: EdgeInsets.zero,
+    final queue = context.watch<QueueProvider>();
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Waiting Room'),
+        centerTitle: true,
+        actions: [
+          IconButton(
+            key: const Key('nextClientButton'),
+            tooltip: 'Next Client',
+            onPressed: queue.clients.isEmpty ? null : queue.nextClient,
+            icon: const Icon(Icons.skip_next),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const DrawerHeader(
-                decoration: BoxDecoration(color: Colors.black87),
-                child: Center(
-                  child: Text(
-                    'Settings',
-                    style: TextStyle(color: Colors.white, fontSize: 24),
-                  ),
-                ),
-              ),
-              ListTile(
-                title: const Text('Spacing (Distance)'),
-                subtitle: Slider(
-                  value: appSettings.spacing,
-                  min: 0.0,
-                  max: 40.0,
-                  onChanged: appSettings.setSpacing,
-                ),
-              ),
-              ListTile(
-                title: const Text('Border Radius (Sharpness)'),
-                subtitle: Slider(
-                  value: appSettings.borderRadius,
-                  min: 0.0,
-                  max: 100.0,
-                  onChanged: appSettings.setBorderRadius,
-                ),
-              ),
-              const Divider(),
-              SwitchListTile(
-                title: const Text('Random Colors'),
-                subtitle: const Text('Disable for color degradation'),
-                value: appSettings.randomColors,
-                onChanged: appSettings.setRandomColors,
-              ),
-              // Only show the color options if randomColors is disabled
-              if (!appSettings.randomColors)
-                ListTile(
-                  title: const Text('Base Color'),
-                  subtitle: Padding(
-                    padding: const EdgeInsets.only(top: 16.0, bottom: 8.0),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        _ColorOption(Colors.blue),
-                        _ColorOption(Colors.red),
-                        _ColorOption(Colors.green),
-                      ],
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _nameController,
+                      textInputAction: TextInputAction.done,
+                      decoration: const InputDecoration(
+                        labelText: 'Client name',
+                        border: OutlineInputBorder(),
+                      ),
+                      onSubmitted: (_) => _addClient(queue),
                     ),
                   ),
-                ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: () => _addClient(queue),
+                    child: const Text('Add'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Text(
+                    'Clients in Queue: ${queue.clients.length}',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const Spacer(),
+                  Flexible(
+                    child: Text(
+                      queue.syncMessage ?? 'Starting…',
+                      textAlign: TextAlign.end,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: queue.isLoading && queue.clients.isEmpty
+                    ? const Center(child: CircularProgressIndicator())
+                    : queue.clients.isEmpty
+                    ? const Center(child: Text('No one in the queue yet.'))
+                    : ListView.builder(
+                        itemCount: queue.clients.length,
+                        itemBuilder: (context, index) {
+                          final client = queue.clients[index];
+                          final location =
+                              client.latitude == null ||
+                                  client.longitude == null
+                              ? 'Location not captured'
+                              : '${client.latitude!.toStringAsFixed(4)}, '
+                                    '${client.longitude!.toStringAsFixed(4)}';
+                          return Card(
+                            child: ListTile(
+                              leading: CircleAvatar(
+                                child: Text('${index + 1}'),
+                              ),
+                              title: Text(client.name),
+                              subtitle: Text(
+                                '$location · ${_formatTime(client.createdAt)}',
+                              ),
+                              trailing: IconButton(
+                                tooltip: 'Remove ${client.name}',
+                                icon: const Icon(Icons.delete_outline),
+                                onPressed: () => queue.removeClient(client.id),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+              FilledButton.icon(
+                onPressed: queue.clients.isEmpty ? null : queue.nextClient,
+                icon: const Icon(Icons.arrow_forward),
+                label: const Text('Next Client'),
+              ),
             ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _ColorOption extends StatelessWidget {
-  final MaterialColor color;
-  const _ColorOption(this.color);
-
-  @override
-  Widget build(BuildContext context) {
-    final isSelected = appSettings.baseColor == color;
-    return GestureDetector(
-      onTap: () => appSettings.setBaseColor(color),
-      child: Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-          border: Border.all(
-            color: isSelected ? Colors.black : Colors.transparent,
-            width: 4,
           ),
-          boxShadow: const [
-            BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))
-          ],
         ),
       ),
     );
   }
-}
 
-class SplittableRectangle extends StatefulWidget {
-  final Axis splitDirection;
-
-  const SplittableRectangle({super.key, required this.splitDirection});
-
-  @override
-  State<SplittableRectangle> createState() => _SplittableRectangleState();
-}
-
-class _SplittableRectangleState extends State<SplittableRectangle> {
-  bool isSplit = false;
-  late Color randomColor;
-  late int shadeIndex;
-
-  @override
-  void initState() {
-    super.initState();
-    randomColor = _getRandomColor();
-    // Material colors have shade intensities from 100 to 900.
-    // We generate a random shade for this specific rectangle.
-    shadeIndex = (Random().nextInt(9) + 1) * 100;
-  }
-
-  Color _getRandomColor() {
-    final random = Random();
-    return Color.fromARGB(
-      255,
-      random.nextInt(256),
-      random.nextInt(256),
-      random.nextInt(256),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!isSplit) {
-      // ListenableBuilder here ensures that every leaf rectangle redraws itself 
-      // dynamically as you drag the sliders in the drawer, without losing state!
-      return ListenableBuilder(
-        listenable: appSettings,
-        builder: (context, _) {
-          final currentColor = appSettings.randomColors
-              ? randomColor
-              : appSettings.baseColor[shadeIndex]!;
-
-          return GestureDetector(
-            onTap: () {
-              setState(() {
-                isSplit = true; // Splitting triggers rebuild
-              });
-            },
-            child: Padding(
-              // Apply the spacing setting
-              padding: EdgeInsets.all(appSettings.spacing / 2),
-              child: Container(
-                width: double.infinity,
-                height: double.infinity,
-                decoration: BoxDecoration(
-                  color: currentColor,
-                  // Apply the border radius setting
-                  borderRadius: BorderRadius.circular(appSettings.borderRadius),
-                  border: Border.all(color: Colors.black26, width: 0.5),
-                ),
-              ),
-            ),
-          );
-        },
-      );
-    }
-
-    // Once split, we alternate the direction for the next splits
-    final nextDirection = widget.splitDirection == Axis.horizontal
-        ? Axis.vertical
-        : Axis.horizontal;
-
-    // Both halves are their own independent SplittableRectangle
-    final children = [
-      Expanded(child: SplittableRectangle(splitDirection: nextDirection)),
-      Expanded(child: SplittableRectangle(splitDirection: nextDirection)),
-    ];
-
-    if (widget.splitDirection == Axis.horizontal) {
-      return Row(children: children);
-    } else {
-      return Column(children: children);
-    }
+  String _formatTime(DateTime dateTime) {
+    final local = dateTime.toLocal();
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
   }
 }
